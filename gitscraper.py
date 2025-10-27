@@ -570,16 +570,95 @@ def parse_args_clean(argv: Optional[Sequence[str]] = None) -> argparse.Namespace
     parser.add_argument("--dry-run", action="store_true", help="Print results without writing file")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
-    # If launched with no arguments, show help and exit clearly
-    if argv is None and len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        parser.exit(2)
+    # In interactive mode (no args), main() will prompt instead of exiting
 
     return parser.parse_args(argv)
 
 
+def _parse_url_or_repo(input_text: str) -> Tuple[str, str, str, str, Optional[str]]:
+    """Parse a GitHub repo or file URL into parts.
+
+    Accepts formats:
+    - owner/repo
+    - https://github.com/owner/repo
+    - https://github.com/owner/repo/blob/branch/path/to/file.md
+    - https://raw.githubusercontent.com/owner/repo/branch/path/to/file.md
+
+    Returns: (owner, repo, branch, path, anchor)
+    Defaults to branch 'main' and path 'README.md' when not specified.
+    """
+    text = input_text.strip()
+    anchor: Optional[str] = None
+    try:
+        if text.startswith("http://") or text.startswith("https://"):
+            from urllib.parse import urlparse
+
+            parsed = urlparse(text)
+            parts = [p for p in parsed.path.split("/") if p]
+            anchor = parsed.fragment or None
+
+            if parsed.netloc == "raw.githubusercontent.com" and len(parts) >= 4:
+                owner, repo, branch = parts[0], parts[1], parts[2]
+                path = "/".join(parts[3:])
+                return owner, repo, branch, path, anchor
+
+            if parsed.netloc == "github.com" and len(parts) >= 2:
+                owner, repo = parts[0], parts[1]
+                # blob URL with explicit branch and path
+                if len(parts) >= 4 and parts[2] == "blob":
+                    branch = parts[3]
+                    path = "/".join(parts[4:]) if len(parts) > 4 else "README.md"
+                    return owner, repo, branch, path, anchor
+                # repo root URL – default path/branch
+                return owner, repo, "main", "README.md", anchor
+
+        # owner/repo short form
+        if "/" in text and not text.startswith(("http://", "https://")):
+            owner, repo = text.split("/", 1)
+            return owner, repo, "main", "README.md", None
+    except Exception:
+        pass
+
+    raise ScraperError("Unable to parse repository or URL. Provide owner/repo or a GitHub URL.")
+
+
+def _prompt_interactive() -> argparse.Namespace:
+    print("GitScraper interactive mode — leave blank to accept defaults where offered.")
+    raw = input("GitHub repo or URL (e.g., owner/repo or https://github.com/owner/repo/blob/branch/file.md): ").strip()
+    if not raw:
+        raise SystemExit(2)
+    owner, repo, branch, path, anchor = _parse_url_or_repo(raw)
+
+    kw = input("Keywords (comma-separated, optional): ").strip()
+    keywords = kw
+
+    # Build an argparse-like namespace for reuse below
+    return argparse.Namespace(
+        repo=f"{owner}/{repo}",
+        branch=branch or "main",
+        path=path or "README.md",
+        anchor=anchor,
+        keywords=keywords,
+        outfile="out.txt",
+        include_headers=False,
+        max_rows=None,
+        dry_run=False,
+        verbose=False,
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = parse_args_clean(argv)
+    # If launched with no CLI args, switch to interactive prompt mode.
+    if argv is None and len(sys.argv) == 1:
+        try:
+            args = _prompt_interactive()
+        except SystemExit as e:
+            return int(getattr(e, "code", 2) or 2)
+        except ScraperError as exc:
+            print(f"Error: {exc}")
+            return 2
+    else:
+        args = parse_args_clean(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

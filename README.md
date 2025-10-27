@@ -14,6 +14,12 @@ Extract structured rows (Company | Role | Location | URL) from Markdown files ho
 
 Run the CLI and point it at a repo, branch, and path.
 
+Interactive mode (prompts for GitHub URL and keywords):
+
+```
+python gitscraper.py
+```
+
 Basic example (fetch whole file and write to `out.txt`):
 
 ```
