@@ -505,7 +505,26 @@ def write_output(rows: Sequence[NormalizedRow], outfile: str, include_headers: b
 # ---------------------------------------------------------------------------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="GitScraper Markdown role filter")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Extracts structured rows (Company, Role, Location, URL) from a Markdown file "
+            "in a GitHub repo. Useful for scraping job/role listings."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # Basic: fetch full file and write to out.txt\n"
+            "  python gitscraper.py --repo owner/repo --path README.md\n\n"
+            "  # Target a section by header anchor and filter for Canada\n"
+            "  python gitscraper.py --repo owner/repo --path jobs.md \\\n+            \n    --anchor roles --keywords canada --include-headers --outfile jobs_canada.txt\n\n"
+            "  # Preview first results without writing a file\n"
+            "  python gitscraper.py --repo owner/repo --path listings.md --dry-run --verbose\n\n"
+            "Notes:\n"
+            "- --repo must be 'owner/repo' (no https://).\n"
+            "- --anchor accepts a header slug or text (e.g., 'roles' or '#roles').\n"
+            "- Set GITHUB_TOKEN to avoid rate limits (optional).\n"
+        ),
+    )
     parser.add_argument("--repo", required=True, help="GitHub repository in owner/repo format")
     parser.add_argument("--branch", default="main", help="Git branch name (default: main)")
     parser.add_argument("--path", required=True, help="Path to the file in the repository")
@@ -520,24 +539,74 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-rows", type=int, help="Maximum number of rows to output")
     parser.add_argument("--dry-run", action="store_true", help="Print results without writing file")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    # If launched with no arguments, show help and exit clearly
+    if argv is None and len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        parser.exit(2)
+
+    return parser.parse_args(argv)
+
+
+def parse_args_clean(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Extracts structured rows (Company, Role, Location, URL) from a Markdown file "
+            "in a GitHub repo. Useful for scraping job/role listings."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument("--repo", required=True, help="GitHub repository in owner/repo format")
+    parser.add_argument("--branch", default="main", help="Git branch name (default: main)")
+    parser.add_argument("--path", required=True, help="Path to the file in the repository")
+    parser.add_argument("--anchor", help="Markdown header anchor (e.g., 'roles' or '#roles')")
+    parser.add_argument(
+        "--keywords",
+        default="",
+        help="Comma-separated keywords for filtering (case-insensitive)",
+    )
+    parser.add_argument("--outfile", default="out.txt", help="Output file path")
+    parser.add_argument("--include-headers", action="store_true", help="Include header row")
+    parser.add_argument("--max-rows", type=int, help="Maximum number of rows to output")
+    parser.add_argument("--dry-run", action="store_true", help="Print results without writing file")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    # If launched with no arguments, show help and exit clearly
+    if argv is None and len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        parser.exit(2)
+
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = parse_args(argv)
+    args = parse_args_clean(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",
     )
 
-    owner_repo = args.repo
-    if "/" not in owner_repo:
-        logger.error("--repo must be in 'owner/repo' format")
+    owner_repo = args.repo.strip()
+    if "/" not in owner_repo or owner_repo.count("/") != 1 or owner_repo.startswith("http"):
+        logger.error("--repo must be in 'owner/repo' format (no protocol)")
         return 1
     owner, repo = owner_repo.split("/", 1)
 
     token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        logger.debug("No GITHUB_TOKEN detected; unauthenticated requests may be rate-limited.")
+
+    # Friendly run summary
+    logger.info(
+        "Repo: %s/%s | Branch: %s | Path: %s | Anchor: %s | Filters: %s | Out: %s",
+        owner,
+        repo,
+        args.branch,
+        args.path,
+        args.anchor or "<entire file>",
+        args.keywords or "<none>",
+        args.outfile,
+    )
 
     try:
         markdown = fetch_raw(owner, repo, args.branch, args.path, token=token)
